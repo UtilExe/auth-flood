@@ -210,8 +210,13 @@ void AuthSocket::OnRead()
         { XFER_RESUME,              STATUS_PATCH,       &AuthSocket::_HandleXferResume        },
         { XFER_CANCEL,              STATUS_PATCH,       &AuthSocket::_HandleXferCancel        }
     };
+    
+    
 
+    #define MAX_AUTH_LOGON_CHALLENGES_IN_A_ROW 3
     const int AUTH_TOTAL_COMMANDS = sizeof(table)/sizeof(AuthHandler);
+    uint32 challengesInARow = 0;
+    uint32 RealmchallengesInARow = 0;
     uint8 _cmd;
 
     while (1)
@@ -220,6 +225,34 @@ void AuthSocket::OnRead()
             return;
 
         size_t i;
+        
+        if (_cmd == 16) // REALM_LIST
+        {
+            ++RealmchallengesInARow;
+            if (RealmchallengesInARow > 3)
+            {
+                TC_LOG_WARN("server.authserver", "Got %u REALM_LIST in a row from '%s', possible ongoing DoS", challengesInARow, socket().getRemoteAddress().c_str());
+                socket().shutdown();
+
+                // Send packet after we close down socket, this will cause client/exploit program to crash
+                ByteBuffer buffer;
+                buffer << uint8(WOW_FAIL_SUSPENDED);
+                socket().send((char const*)buffer.contents(), buffer.size());
+                return;
+            }
+        }
+
+
+        if (_cmd == AUTH_LOGON_CHALLENGE)
+        {
+            ++challengesInARow;
+            if (challengesInARow == MAX_AUTH_LOGON_CHALLENGES_IN_A_ROW)
+            {
+                TC_LOG_WARN("server.authserver", "Got %u AUTH_LOGON_CHALLENGE in a row from '%s', possible ongoing DoS", challengesInARow, socket().getRemoteAddress().c_str());
+                socket().shutdown();
+                return;
+            }
+        }
 
         // Circle through known commands and call the correct command handler
         for (i = 0; i < AUTH_TOTAL_COMMANDS; ++i)
